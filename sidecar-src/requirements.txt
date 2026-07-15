@@ -1,0 +1,7 @@
+# Sidecar dependencies (must be installed alongside code-puppy)
+# code-puppy itself is a prerequisite, not listed here.
+fastapi>=0.136
+uvicorn[standard]>=0.48
+websockets>=16.0
+pydantic>=2.13
+watchdog>=6.0

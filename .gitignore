@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+gen/
+target/
+Audit*.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bat
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env
+.env
+.env.local
+
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
