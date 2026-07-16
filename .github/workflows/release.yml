@@ -1,0 +1,91 @@
+name: Build desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, such as v0.1.0"
+        required: true
+        type: string
+
+      release_name:
+        description: "Optional release name"
+        required: false
+        type: string
+
+      draft:
+        description: "Create as a draft release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+
+          - name: macOS Intel
+            platform: macos-latest
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/renderer/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: src/renderer
+        run: npm ci
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Build and attach release files
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: ${{ inputs.release_name || format('PupCode IDE {0}', inputs.tag) }}
+          releaseBody: |
+            PupCode IDE desktop release.
+
+            Choose the installer matching your operating system:
+            - Windows x64: NSIS `.exe`
+            - macOS Apple Silicon: ARM64 `.dmg`
+            - macOS Intel: x64 `.dmg`
+          releaseDraft: ${{ inputs.draft }}
+          prerelease: false
+          args: >-
+            --target ${{ matrix.target }}
+            --bundles ${{ matrix.bundles }}

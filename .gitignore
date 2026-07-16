@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-.github/
 docker-compose.windows.yml
 
 # Build outputs
@@ -8,7 +7,6 @@ dist/
 gen/
 target/
 Audit*.md
-package-lock.json
 release-artifacts/
 
 # IDE
