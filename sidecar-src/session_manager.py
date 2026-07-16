@@ -96,6 +96,37 @@ class SessionManager(TokenUsageMixin):
         except Exception:
             return {}
 
+    def _safe_session_path(self, session_name: str, suffix: str) -> Path:
+        """Build a session file path and ensure it stays within autosave_dir.
+
+        Args:
+            session_name: Client-supplied session identifier.
+            suffix: File extension including dot, e.g. ".pkl" or "_meta.json".
+
+        Returns:
+            A resolved Path guaranteed to reside inside self.autosave_dir.
+
+        Raises:
+            ValueError: If session_name is empty, contains null/control chars,
+                         or the resolved path escapes autosave_dir.
+        """
+        if not session_name:
+            raise ValueError("session_name is empty")
+        if "\x00" in session_name or any(ord(c) < 32 for c in session_name):
+            raise ValueError("session_name contains invalid characters")
+
+        base_dir = self.autosave_dir.resolve(strict=False)
+        candidate = (self.autosave_dir / f"{session_name}{suffix}").resolve()
+
+        try:
+            candidate.relative_to(base_dir)
+        except ValueError:
+            raise ValueError(
+                f"session_name '{session_name}' would escape autosave directory"
+            ) from None
+
+        return candidate
+
     # ------------------------------------------------------------------
     # Sync: scan disk → upsert into DB
     # ------------------------------------------------------------------
@@ -226,7 +257,11 @@ class SessionManager(TokenUsageMixin):
         Returns a dict with keys: history, message_count, total_tokens,
         custom_name, description, tags.
         """
-        pkl_path = self.autosave_dir / f"{session_name}.pkl"
+        try:
+            pkl_path = self._safe_session_path(session_name, ".pkl")
+        except ValueError as exc:
+            raise ValueError(f"Invalid session name: {exc}") from None
+
         if not pkl_path.exists():
             raise FileNotFoundError(f"Session file not found: {pkl_path}")
 
@@ -246,7 +281,10 @@ class SessionManager(TokenUsageMixin):
         tags = [t.strip() for t in (tags_raw or "").split(",") if t.strip()] if tags_raw else []
 
         # Also read on-disk meta for token/message counts
-        meta_path = self.autosave_dir / f"{session_name}_meta.json"
+        try:
+            meta_path = self._safe_session_path(session_name, "_meta.json")
+        except ValueError as exc:
+            raise ValueError(f"Invalid session name: {exc}") from None
         meta = self._read_meta(meta_path)
 
         return {
@@ -289,8 +327,15 @@ class SessionManager(TokenUsageMixin):
 
     def delete_session(self, session_name: str) -> dict:
         """Delete session files (.pkl + _meta.json) and DB entry."""
-        pkl_path = self.autosave_dir / f"{session_name}.pkl"
-        meta_path = self.autosave_dir / f"{session_name}_meta.json"
+        try:
+            pkl_path = self._safe_session_path(session_name, ".pkl")
+        except ValueError as exc:
+            raise ValueError(f"Invalid session name: {exc}") from None
+
+        try:
+            meta_path = self._safe_session_path(session_name, "_meta.json")
+        except ValueError as exc:
+            raise ValueError(f"Invalid session name: {exc}") from None
 
         deleted_files = []
         for p in (pkl_path, meta_path):
@@ -311,7 +356,11 @@ class SessionManager(TokenUsageMixin):
 
     def get_preview(self, session_name: str, count: int = 3) -> dict:
         """Load pickle, extract last N messages, return as preview."""
-        pkl_path = self.autosave_dir / f"{session_name}.pkl"
+        try:
+            pkl_path = self._safe_session_path(session_name, ".pkl")
+        except ValueError as exc:
+            return {"error": f"Invalid session name: {exc}"}
+
         if not pkl_path.exists():
             return {"error": f"Session file not found: {pkl_path}"}
 
