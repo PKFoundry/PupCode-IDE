@@ -19,12 +19,103 @@ on:
         default: true
         type: boolean
 
+# Prevent two runs for the same tag from racing each other.
+concurrency:
+  group: pupcode-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+# Default all jobs to read-only access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  create-release:
+    name: Create or locate release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+
+    steps:
+      - name: Create or locate release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_NAME_INPUT: ${{ inputs.release_name }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+
+          echo "Looking for an existing release with tag: ${RELEASE_TAG}"
+
+          RELEASE_IDS="$(
+            gh api \
+              --paginate \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | .id"
+          )"
+
+          RELEASE_COUNT="$(
+            printf '%s\n' "${RELEASE_IDS}" |
+              sed '/^[[:space:]]*$/d' |
+              wc -l |
+              tr -d ' '
+          )"
+
+          if [ "${RELEASE_COUNT}" -gt 1 ]; then
+            echo "::error::Multiple releases already exist for tag ${RELEASE_TAG}."
+            echo "::error::Delete the duplicate draft releases before running this workflow again."
+            exit 1
+          fi
+
+          if [ "${RELEASE_COUNT}" -eq 1 ]; then
+            RELEASE_ID="$(printf '%s\n' "${RELEASE_IDS}" | head -n 1)"
+
+            echo "Using existing release ID: ${RELEASE_ID}"
+            echo "release_id=${RELEASE_ID}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ -n "${RELEASE_NAME_INPUT}" ]; then
+            RELEASE_NAME="${RELEASE_NAME_INPUT}"
+          else
+            RELEASE_NAME="PupCode IDE ${RELEASE_TAG}"
+          fi
+
+          echo "Creating release: ${RELEASE_NAME}"
+
+          RELEASE_ID="$(
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${RELEASE_TAG}" \
+              -f target_commitish="main" \
+              -f name="${RELEASE_NAME}" \
+              -f body='PupCode IDE desktop release.
+
+          Choose the installer matching your operating system:
+          - Windows x64: NSIS `.exe`
+          - macOS Apple Silicon: ARM64 `.dmg`
+          - macOS Intel: x64 `.dmg`' \
+              -F draft="${RELEASE_DRAFT}" \
+              -F prerelease=false \
+              --jq '.id'
+          )"
+
+          echo "Created release ID: ${RELEASE_ID}"
+          echo "release_id=${RELEASE_ID}" >> "${GITHUB_OUTPUT}"
+
   build:
     name: Build ${{ matrix.name }}
+    needs: create-release
+
+    permissions:
+      contents: write
 
     strategy:
       fail-fast: false
@@ -48,8 +139,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Check out repository
+      - name: Check out main
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -75,17 +168,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: ${{ inputs.release_name || format('PupCode IDE {0}', inputs.tag) }}
-          releaseBody: |
-            PupCode IDE desktop release.
-
-            Choose the installer matching your operating system:
-            - Windows x64: NSIS `.exe`
-            - macOS Apple Silicon: ARM64 `.dmg`
-            - macOS Intel: x64 `.dmg`
-          releaseDraft: ${{ inputs.draft }}
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: >-
             --target ${{ matrix.target }}
             --bundles ${{ matrix.bundles }}
