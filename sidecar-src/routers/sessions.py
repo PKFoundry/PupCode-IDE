@@ -1,5 +1,6 @@
 """Session management and token usage endpoints."""
 
+import re
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Request
@@ -8,6 +9,17 @@ from shared import emit_event, get_current_agent, get_global_model_name, logger,
 
 router = APIRouter(prefix="/api/sessions")
 usage_router = APIRouter(prefix="/api/usage")
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_valid_session_name(session_name: str) -> bool:
+    return (
+        isinstance(session_name, str)
+        and bool(session_name.strip())
+        and "\x00" not in session_name
+        and all(ord(c) >= 32 for c in session_name)
+        and _SESSION_NAME_RE.fullmatch(session_name.strip()) is not None
+    )
 
 
 # =============================================================================
@@ -38,6 +50,9 @@ async def load_session(request: dict):
     session_name = request.get("session_name")
     if not session_name:
         return {"error": "session_name is required"}
+    if not _is_valid_session_name(session_name):
+        return {"success": False, "error": "Invalid session_name"}
+    session_name = session_name.strip()
     try:
         result = session_mgr.load_session(session_name)
         # Don't return raw history over REST — just metadata.
@@ -61,6 +76,9 @@ async def load_session(request: dict):
 @router.post("/{session_name}/load-history")
 async def load_session_history(session_name: str):
     """Load session history, inject into agent, and return for display."""
+    if not _is_valid_session_name(session_name):
+        return {"success": False, "error": "Invalid session_name"}
+    session_name = session_name.strip()
     try:
         result = session_mgr.load_session(session_name)
         history = result["history"]
@@ -100,6 +118,9 @@ async def load_session_history(session_name: str):
 @router.put("/{session_name}/rename")
 async def rename_session(session_name: str, request: dict):
     """Rename a session and update its metadata."""
+    if not _is_valid_session_name(session_name):
+        return {"success": False, "error": "Invalid session_name"}
+    session_name = session_name.strip()
     try:
         result = session_mgr.rename_session(
             session_name,
@@ -118,6 +139,9 @@ async def rename_session(session_name: str, request: dict):
 @router.delete("/{session_name}")
 async def delete_session(session_name: str):
     """Delete a session (files + DB entry)."""
+    if not _is_valid_session_name(session_name):
+        return {"success": False, "error": "Invalid session_name"}
+    session_name = session_name.strip()
     try:
         result = session_mgr.delete_session(session_name)
         return result
@@ -129,6 +153,9 @@ async def delete_session(session_name: str):
 @router.get("/{session_name}/preview")
 async def get_session_preview(session_name: str, count: int = 3):
     """Get a preview of the last N messages in a session."""
+    if not _is_valid_session_name(session_name):
+        return {"error": "Invalid session_name"}
+    session_name = session_name.strip()
     try:
         result = session_mgr.get_preview(session_name, count)
         return result
