@@ -11,6 +11,7 @@ release-artifacts/
 fixes/
 
 # IDE
+.codegraph/
 .idea/
 .vscode/
 *.swp

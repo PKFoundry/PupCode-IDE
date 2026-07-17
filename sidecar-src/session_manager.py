@@ -7,6 +7,7 @@ backed by a local SQLite database for custom metadata (names, tags, descriptions
 from __future__ import annotations
 
 import json
+import re
 import logging
 import sqlite3
 from datetime import datetime
@@ -35,7 +36,7 @@ from token_usage import (
 )
 
 logger = logging.getLogger(__name__)
-
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 class SessionManager(TokenUsageMixin):
     """Manages session metadata and provides CRUD over code-puppy autosaves."""
@@ -110,13 +111,21 @@ class SessionManager(TokenUsageMixin):
             ValueError: If session_name is empty, contains null/control chars,
                          or the resolved path escapes autosave_dir.
         """
+        session_name = session_name.strip()
+        if not isinstance(session_name, str):
+            raise ValueError("session_name must be a string")
         if not session_name:
             raise ValueError("session_name is empty")
         if "\x00" in session_name or any(ord(c) < 32 for c in session_name):
             raise ValueError("session_name contains invalid characters")
+        
+        if not _SESSION_NAME_RE.fullmatch(session_name):
+            raise ValueError(
+                "session_name may only contain letters, numbers, dot, underscore, and hyphen"
+            )
 
         base_dir = self.autosave_dir.resolve(strict=False)
-        candidate = (self.autosave_dir / f"{session_name}{suffix}").resolve()
+        candidate = (self.autosave_dir / f"{session_name}{suffix}").resolve(strict=False)
 
         try:
             candidate.relative_to(base_dir)
