@@ -111,14 +111,14 @@ class SessionManager(TokenUsageMixin):
             ValueError: If session_name is empty, contains null/control chars,
                          or the resolved path escapes autosave_dir.
         """
-        session_name = session_name.strip()
         if not isinstance(session_name, str):
             raise ValueError("session_name must be a string")
+        session_name = session_name.strip()
         if not session_name:
             raise ValueError("session_name is empty")
         if "\x00" in session_name or any(ord(c) < 32 for c in session_name):
             raise ValueError("session_name contains invalid characters")
-        
+
         if not _SESSION_NAME_RE.fullmatch(session_name):
             raise ValueError(
                 "session_name may only contain letters, numbers, dot, underscore, and hyphen"
