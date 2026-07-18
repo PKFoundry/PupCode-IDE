@@ -136,6 +136,40 @@ class SessionManager(TokenUsageMixin):
 
         return candidate
 
+    def _safe_read_session_file(self, session_name: str, suffix: str) -> bytes:
+        """Read a session file after path validation.
+
+        Args:
+            session_name: Client-supplied session identifier.
+            suffix: File extension including dot, e.g. ".pkl" or "_meta.json".
+
+        Returns:
+            File contents as bytes.
+
+        Raises:
+            ValueError: If session_name fails validation.
+            FileNotFoundError: If the file does not exist.
+        """
+        file_path = self._safe_session_path(session_name, suffix)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Session file not found: {file_path}")
+        return file_path.read_bytes()
+
+    def _safe_read_session_meta(self, session_name: str) -> dict:
+        """Read *{_meta.json} after path validation.
+
+        Args:
+            session_name: Client-supplied session identifier.
+
+        Returns:
+            Parsed JSON dict ({} on any failure).
+        """
+        try:
+            meta_path = self._safe_session_path(session_name, "_meta.json")
+        except ValueError:
+            return {}
+        return self._read_meta(meta_path)
+
     # ------------------------------------------------------------------
     # Sync: scan disk → upsert into DB
     # ------------------------------------------------------------------
@@ -187,6 +221,14 @@ class SessionManager(TokenUsageMixin):
 
         self.db.commit()
 
+    # Pre-defined, safe ORDER BY fragments (no user interpolation)
+    _SORT_TEMPLATES = {
+        "timestamp": "ORDER BY timestamp",
+        "custom_name": "ORDER BY custom_name",
+        "message_count": "ORDER BY message_count",
+        "total_tokens": "ORDER BY total_tokens",
+    }
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -202,41 +244,39 @@ class SessionManager(TokenUsageMixin):
         """Return paginated, searchable session list merged from DB + disk."""
         self._sync_disk_sessions()
 
-        # Build WHERE + params
-        where_clauses: list[str] = []
+        # Build WHERE clause from static fragments only
+        where_sql = ""
         params: list[Any] = []
 
         if search:
-            where_clauses.append(
-                "(custom_name LIKE ? OR description LIKE ? OR tags LIKE ? OR session_name LIKE ?)"
-            )
+            where_sql = " WHERE (custom_name LIKE ? OR description LIKE ? OR tags LIKE ? OR session_name LIKE ?)"
             like = f"%{search}%"
-            params.extend([like, like, like, like])
+            params = [like, like, like, like]
 
-        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-        # Validate sort column
-        allowed_sort = {"timestamp", "custom_name", "message_count", "total_tokens"}
-        if sort not in allowed_sort:
-            sort = "timestamp"
-        order_dir = "ASC" if order.lower() == "asc" else "DESC"
+        # Choose ORDER BY from a whitelist — never interpolate user input
+        order_fragment = self._SORT_TEMPLATES.get(sort)
+        if order_fragment is None:
+            order_fragment = self._SORT_TEMPLATES["timestamp"]
+        # Append direction via explicit conditional, not string concatenation
+        if order.lower() == "asc":
+            order_clause = order_fragment + " ASC"
+        else:
+            order_clause = order_fragment + " DESC"
 
         # Count total
-        count_row = self.db.execute(
-            f"SELECT COUNT(*) FROM sessions{where_sql}", params
-        ).fetchone()
+        count_sql = f"SELECT COUNT(*) FROM sessions{where_sql}"
+        count_row = self.db.execute(count_sql, params).fetchone()
         total = count_row[0] if count_row else 0
 
-        # Paginated query
-        offset = (page - 1) * limit
-        rows = self.db.execute(
-            f"""SELECT session_name, custom_name, description, tags,
-                       timestamp, message_count, total_tokens, file_path, auto_saved
-                FROM sessions{where_sql}
-                ORDER BY {sort} {order_dir}
-                LIMIT ? OFFSET ?""",
-            params + [limit, offset],
-        ).fetchall()
+        # Paginated query — ORDER BY is from our whitelist
+        query_sql = (
+            "SELECT session_name, custom_name, description, tags, "
+            "timestamp, message_count, total_tokens, file_path, auto_saved "
+            f"FROM sessions{where_sql} "
+            f"{order_clause} "
+            "LIMIT ? OFFSET ?"
+        )
+        rows = self.db.execute(query_sql, params + [limit, (page - 1) * limit]).fetchall()
 
         sessions: list[dict] = []
         for row in rows:
@@ -267,15 +307,12 @@ class SessionManager(TokenUsageMixin):
         custom_name, description, tags.
         """
         try:
-            pkl_path = self._safe_session_path(session_name, ".pkl")
-        except ValueError as exc:
-            raise ValueError(f"Invalid session name: {exc}") from None
-
-        if not pkl_path.exists():
-            raise FileNotFoundError(f"Session file not found: {pkl_path}")
+            # _safe_read_session_file validates path containment
+            raw = self._safe_read_session_file(session_name, ".pkl")
+        except ValueError:
+            raise ValueError("Invalid session name") from None
 
         # Load session history using restricted unpickler
-        raw = pkl_path.read_bytes()
         history = safe_pickle_loads(raw)
 
         # Metadata from DB
@@ -289,12 +326,8 @@ class SessionManager(TokenUsageMixin):
         tags_raw = row[2] if row else None
         tags = [t.strip() for t in (tags_raw or "").split(",") if t.strip()] if tags_raw else []
 
-        # Also read on-disk meta for token/message counts
-        try:
-            meta_path = self._safe_session_path(session_name, "_meta.json")
-        except ValueError as exc:
-            raise ValueError(f"Invalid session name: {exc}") from None
-        meta = self._read_meta(meta_path)
+        # On-disk meta via safe helper
+        meta = self._safe_read_session_meta(session_name)
 
         return {
             "history": history,
@@ -338,13 +371,13 @@ class SessionManager(TokenUsageMixin):
         """Delete session files (.pkl + _meta.json) and DB entry."""
         try:
             pkl_path = self._safe_session_path(session_name, ".pkl")
-        except ValueError as exc:
-            raise ValueError(f"Invalid session name: {exc}") from None
+        except ValueError:
+            raise ValueError("Invalid session name") from None
 
         try:
             meta_path = self._safe_session_path(session_name, "_meta.json")
-        except ValueError as exc:
-            raise ValueError(f"Invalid session name: {exc}") from None
+        except ValueError:
+            raise ValueError("Invalid session name") from None
 
         deleted_files = []
         for p in (pkl_path, meta_path):
@@ -366,19 +399,18 @@ class SessionManager(TokenUsageMixin):
     def get_preview(self, session_name: str, count: int = 3) -> dict:
         """Load pickle, extract last N messages, return as preview."""
         try:
-            pkl_path = self._safe_session_path(session_name, ".pkl")
-        except ValueError as exc:
-            return {"error": f"Invalid session name: {exc}"}
-
-        if not pkl_path.exists():
-            return {"error": f"Session file not found: {pkl_path}"}
+            # _safe_read_session_file validates path containment
+            raw = self._safe_read_session_file(session_name, ".pkl")
+        except ValueError:
+            return {"success": False, "error": "Invalid session name"}
+        except FileNotFoundError:
+            return {"success": False, "error": "Session file not found"}
 
         # Load history with restricted unpickler
         try:
-            raw = pkl_path.read_bytes()
             history = safe_pickle_loads(raw)
-        except Exception as e:
-            return {"error": f"Failed to load session: {e}"}
+        except Exception:
+            return {"success": False, "error": "Failed to load session data"}
 
         # Get DB metadata
         row = self.db.execute(

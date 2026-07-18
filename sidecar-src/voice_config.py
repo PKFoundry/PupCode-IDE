@@ -40,7 +40,7 @@ def read_voice_config() -> dict:
     except FileNotFoundError:
         return dict(_DEFAULT_CONFIG)
     except (json.JSONDecodeError, OSError) as e:
-        logger.error(f"Failed to read voice config: {e}")
+        logger.error("Failed to read voice config: %s", e)
         return dict(_DEFAULT_CONFIG)
 
 
@@ -60,7 +60,7 @@ def read_voice_config_raw() -> dict:
     except FileNotFoundError:
         return dict(_DEFAULT_CONFIG)
     except (json.JSONDecodeError, OSError) as e:
-        logger.error(f"Failed to read voice config: {e}")
+        logger.error("Failed to read voice config: %s", e)
         return dict(_DEFAULT_CONFIG)
 
 
@@ -80,7 +80,7 @@ def write_voice_config(config: dict) -> dict:
         logger.info("Voice config saved")
         return config
     except OSError as e:
-        logger.error(f"Failed to write voice config: {e}")
+        logger.error("Failed to write voice config: %s", e)
         raise
 
 

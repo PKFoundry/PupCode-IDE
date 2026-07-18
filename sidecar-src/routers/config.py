@@ -8,6 +8,12 @@ from typing import Any, Dict
 from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from error_handling import (
+    access_denied_response,
+    file_not_found_response,
+    invalid_request_response,
+    safe_error_response,
+)
 from shared import (
     _agent_dir,
     _code_puppy_dir,
@@ -22,7 +28,6 @@ from shared import (
     set_model_name,
 )
 from voice_config import read_voice_config, read_voice_config_raw, validate_voice_config, write_voice_config
-
 
 
 # =============================================================================
@@ -43,15 +48,26 @@ async def get_config():
 
 @config_router.put("")
 async def update_config(body: Dict[str, Any]):
+    """Update config — working_dir, model."""
     updates: Dict[str, Any] = {}
-    if "working_dir" in body and os.path.isdir(body["working_dir"]):
-        old_dir = app_state.working_dir
-        app_state.working_dir = body["working_dir"]
-        os.chdir(app_state.working_dir)
-        updates["working_dir"] = app_state.working_dir
-        # Restart file watcher with new directory
-        app_state._start_file_watcher()
-        logger.info(f"Workspace changed: {old_dir} -> {app_state.working_dir}")
+    if "working_dir" in body:
+        new_dir = body["working_dir"]
+        try:
+            # Resolve to canonical path BEFORE checking existence
+            resolved = os.path.realpath(os.path.abspath(new_dir))
+            if not os.path.isdir(resolved):
+                return {"success": False, "error": "Directory does not exist"}
+            old_dir = app_state.working_dir
+            app_state.working_dir = resolved
+            os.chdir(resolved)
+            updates["working_dir"] = resolved
+            # Restart file watcher with new directory
+            app_state._start_file_watcher()
+            logger.info("Workspace changed: %s -> %s", old_dir, resolved)
+        except Exception as e:
+            return safe_error_response(
+                e, logger_obj=logger, context="changing workspace directory"
+            )
     if "model" in body:
         set_model_name(body["model"])
         updates["model"] = body["model"]
@@ -64,10 +80,11 @@ workspace_router = APIRouter(prefix="/api/workspace")
 @workspace_router.get("")
 async def get_workspace():
     """Get current workspace info."""
+    wd = app_state.working_dir or ""
     return {
         "working_dir": app_state.working_dir,
-        "exists": os.path.isdir(app_state.working_dir or ""),
-        "is_git_repo": os.path.isdir(os.path.join(app_state.working_dir or "", ".git")),
+        "exists": os.path.isdir(wd),
+        "is_git_repo": os.path.isdir(os.path.join(wd, ".git")),
     }
 
 
@@ -91,7 +108,7 @@ async def save_voice_config(config: dict):
         saved = write_voice_config(config)
         return {"success": True, "config": saved}
     except OSError as e:
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="saving voice config")
 
 
 @voice_router.post("/validate")
@@ -129,7 +146,10 @@ async def transcribe_audio(file: UploadFile):
             )
 
         if resp.status_code != 200:
-            return JSONResponse(status_code=resp.status_code, content={"error": f"STT failed: {resp.text}"})
+            return JSONResponse(
+                status_code=resp.status_code,
+                content={"error": "STT service returned an error"},
+            )
 
         result = resp.json()
         return {"text": result.get("text", "")}
@@ -137,8 +157,7 @@ async def transcribe_audio(file: UploadFile):
     except httpx.ConnectError:
         return JSONResponse(status_code=502, content={"error": "Cannot connect to STT endpoint"})
     except Exception as e:
-        logger.error(f"Transcription error: {e}", exc_info=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return safe_error_response(e, logger_obj=logger, context="transcribing audio")
 
 
 # =============================================================================
@@ -166,8 +185,7 @@ async def list_themes():
                 continue
         return {"themes": themes}
     except Exception as e:
-        logger.error(f"Error listing themes: {e}", exc_info=True)
-        return {"themes": [], "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="listing themes", extra={"themes": []})
 
 
 @themes_router.get("/{filename}")
@@ -176,16 +194,22 @@ async def get_theme(filename: str):
     try:
         theme_path = (_themes_dir() / filename).resolve()
         themes_dir = _themes_dir().resolve()
-        # Containment check: reject paths outside themes directory
-        if not str(theme_path).startswith(str(themes_dir)):
-            return JSONResponse(status_code=403, content={"error": "Access denied: path outside themes directory"})
+
+        # Containment check using relative_to() instead of string prefix
+        try:
+            theme_path.relative_to(themes_dir)
+        except ValueError:
+            return access_denied_response(
+                logger, context=f"path traversal attempt in theme access: {filename}"
+            )
+
         if not theme_path.exists() or not theme_path.name.endswith(".json"):
-            return {"error": "Theme not found"}
+            return file_not_found_response(logger, context=f"theme file {filename}")
+
         data = json.loads(theme_path.read_text(encoding="utf-8"))
         return data
     except Exception as e:
-        logger.error(f"Error loading theme: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"loading theme {filename}")
 
 
 @themes_router.post("/save")
@@ -196,14 +220,20 @@ async def save_theme(request: Request):
         name = body.get("name", "")
         colors = body.get("colors", {})
         author = body.get("author", "")
-        safe_name = name.strip().replace(" ", "-").lower()
+        # Use basename() to strip any directory components
+        safe_basename = Path(name).name
+        safe_name = safe_basename.strip().replace(" ", "-").lower()
         filename = f"{safe_name}.json"
         theme_path = (_themes_dir() / filename).resolve()
         themes_dir = _themes_dir().resolve()
 
-        # Containment check: prevent path traversal outside themes directory
-        if not str(theme_path).startswith(str(themes_dir)):
-            return JSONResponse(status_code=403, content={"error": "Access denied: path outside themes directory"})
+        # Containment check using relative_to()
+        try:
+            theme_path.relative_to(themes_dir)
+        except ValueError:
+            return access_denied_response(
+                logger, context=f"path traversal attempt in theme save: {name}"
+            )
 
         data = {
             "$schema": "code-puppy-theme-v1",
@@ -215,8 +245,7 @@ async def save_theme(request: Request):
         theme_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         return {"success": True, "file": filename}
     except Exception as e:
-        logger.error(f"Error saving theme: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="saving theme")
 
 
 @themes_router.delete("/{filename}")
@@ -226,17 +255,21 @@ async def delete_theme(filename: str):
         theme_path = (_themes_dir() / filename).resolve()
         themes_dir = _themes_dir().resolve()
 
-        # Containment check: prevent path traversal outside themes directory
-        if not str(theme_path).startswith(str(themes_dir)):
-            return JSONResponse(status_code=403, content={"error": "Access denied: path outside themes directory"})
+        # Containment check using relative_to() instead of string prefix
+        try:
+            theme_path.relative_to(themes_dir)
+        except ValueError:
+            return access_denied_response(
+                logger, context=f"path traversal attempt in theme deletion: {filename}"
+            )
 
         if not theme_path.exists() or not theme_path.name.endswith(".json"):
-            return {"error": "Theme not found"}
+            return file_not_found_response(logger, context=f"theme file {filename}")
+
         theme_path.unlink()
         return {"success": True}
     except Exception as e:
-        logger.error(f"Error deleting theme: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"deleting theme {filename}")
 
 
 # =============================================================================
@@ -281,8 +314,7 @@ async def list_mcp_servers():
 
         return {"servers": servers}
     except Exception as e:
-        logger.error(f"Error listing MCP servers: {e}", exc_info=True)
-        return {"servers": [], "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="listing MCP servers", extra={"servers": []})
 
 
 @mcp_router.post("/add")
@@ -317,11 +349,10 @@ async def add_mcp_server(body: Dict[str, Any]):
         with open(mcp_config_path, "w", encoding="utf-8") as f:
             json.dump(mcp_data, f, indent=2)
 
-        logger.info(f"Added MCP server: {name}")
+        logger.info("Added MCP server: %s", name)
         return {"success": True, "name": name}
     except Exception as e:
-        logger.error(f"Error adding MCP server: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"adding MCP server {name}")
 
 
 @mcp_router.post("/{name}/start")
@@ -335,8 +366,7 @@ async def start_mcp_server(name: str):
         else:
             return {"success": False, "error": "Current agent does not support MCP"}
     except Exception as e:
-        logger.error(f"Error starting MCP server: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"starting MCP server {name}")
 
 
 @mcp_router.post("/{name}/stop")
@@ -350,8 +380,7 @@ async def stop_mcp_server(name: str):
         else:
             return {"success": False, "error": "Current agent does not support MCP"}
     except Exception as e:
-        logger.error(f"Error stopping MCP server: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"stopping MCP server {name}")
 
 
 @mcp_router.delete("/{name}")
@@ -373,11 +402,10 @@ async def delete_mcp_server(name: str):
         with open(mcp_config_path, "w", encoding="utf-8") as f:
             json.dump(mcp_data, f, indent=2)
 
-        logger.info(f"Deleted MCP server: {name}")
+        logger.info("Deleted MCP server: %s", name)
         return {"success": True, "name": name}
     except Exception as e:
-        logger.error(f"Error deleting MCP server: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"deleting MCP server {name}")
 
 
 # =============================================================================
@@ -416,8 +444,7 @@ async def list_commands():
 
         return {"commands": commands}
     except Exception as e:
-        logger.error(f"Error listing commands: {e}", exc_info=True)
-        return {"commands": [], "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="listing slash commands", extra={"commands": []})
 
 
 @commands_router.post("/execute")
@@ -454,8 +481,7 @@ async def execute_command(body: Dict[str, str]):
             return {"success": True, "command": command, "output": f"Forwarding '{command}' to agent"}
 
     except Exception as e:
-        logger.error(f"Error executing command: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"executing command {command}")
 
 
 # =============================================================================
@@ -491,5 +517,4 @@ async def get_agents_rules():
 
         return {"rules": rules}
     except Exception as e:
-        logger.error(f"Error reading AGENTS.md: {e}", exc_info=True)
-        return {"rules": [], "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="reading AGENTS.md", extra={"rules": []})

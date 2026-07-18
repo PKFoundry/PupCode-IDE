@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter
 
+from error_handling import safe_error_response
 from shared import (
     _code_puppy_dir,
     _find_model_source,
@@ -36,8 +37,10 @@ async def list_models():
         ]
         return {"models": model_list, "active_model": current}
     except Exception as e:
-        logger.error(f"Error listing models: {e}", exc_info=True)
-        return {"models": [], "active_model": None, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="listing models", extra={
+            "models": [],
+            "active_model": None,
+        })
 
 
 @router.post("/switch")
@@ -47,11 +50,10 @@ async def switch_model(body: Dict[str, str]):
     model_name = body.get("name", "")
     try:
         set_model_name(model_name)
-        logger.info(f"Switched to model: {model_name}")
+        logger.info("Switched to model: %s", model_name)
         return {"success": True, "active_model": model_name}
     except Exception as e:
-        logger.error(f"Error switching model: {e}")
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"switching to model {model_name}")
 
 
 @router.post("/add")
@@ -103,11 +105,10 @@ async def add_model(body: Dict[str, Any]):
         with open(extra_path, "w", encoding="utf-8") as f:
             json.dump(extra_config, f, indent=4)
 
-        logger.info(f"Added model: {model_name}")
+        logger.info("Added model: %s", model_name)
         return {"success": True, "name": model_name}
     except Exception as e:
-        logger.error(f"Error adding model: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"adding model {model_name}")
 
 
 @router.delete("/{name}")
@@ -131,15 +132,14 @@ async def delete_model(name: str):
                 source_config.pop(name, None)
                 with open(source_path, "w", encoding="utf-8") as f:
                     json.dump(source_config, f, indent=4)
-                logger.info(f"Removed model {name} from {source_path.name}")
+                logger.info("Removed model %s from %s", name, source_path.name)
             except (json.JSONDecodeError, Exception):
                 pass
 
-        logger.info(f"Deleted model: {name}")
+        logger.info("Deleted model: %s", name)
         return {"success": True, "name": name}
     except Exception as e:
-        logger.error(f"Error deleting model: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"deleting model {name}")
 
 
 @router.get("/{name}")
@@ -163,8 +163,7 @@ async def get_model(name: str):
             "source_file": source_file,
         }
     except Exception as e:
-        logger.error(f"Error getting model: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"getting model config for {name}")
 
 
 @router.put("/{name}")
@@ -207,8 +206,7 @@ async def update_model(name: str, body: Dict[str, Any]):
         with open(source_path, "w", encoding="utf-8") as f:
             json.dump(source_config, f, indent=4)
 
-        logger.info(f"Updated model {name} in {source_path.name}")
+        logger.info("Updated model %s in %s", name, source_path.name)
         return {"success": True, "name": name}
     except Exception as e:
-        logger.error(f"Error updating model: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"updating model {name}")

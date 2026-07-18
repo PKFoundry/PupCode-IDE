@@ -14,6 +14,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 # Import auth utilities
 from auth_middleware import require_ws_auth
+from error_handling import redact_error
 
 # Import from shared module
 from shared import (
@@ -97,9 +98,9 @@ async def chat_websocket(websocket: WebSocket):
         # Starlette raises RuntimeError when client closes before receive_text()
         if session_id:
             app_state._active_sessions.pop(session_id, None)
-        logger.info(f"Client disconnected (session: {session_id}): {e}")
+        logger.info("Client disconnected (session: %s): %s", session_id, e)
     except Exception as e:
-        logger.error(f"WebSocket error: {e}", exc_info=True)
+        logger.error("WebSocket error: %s", e, exc_info=True)
         if session_id:
             app_state._active_sessions.pop(session_id, None)
 
@@ -138,7 +139,7 @@ async def files_websocket(websocket: WebSocket):
         app_state._file_ws_clients.pop(session_id, None)
         logger.info(f"File WS client disconnected: {session_id}")
     except Exception as e:
-        logger.error(f"File WS error: {e}", exc_info=True)
+        logger.error("File WS error: %s", e, exc_info=True)
         app_state._file_ws_clients.pop(session_id, None)
 
 
@@ -175,7 +176,7 @@ async def _handle_user_message(
             except ImportError:
                 logger.warning("pydantic_ai.BinaryContent not available, ignoring attachments")
             except Exception as e:
-                logger.warning(f"Failed to process attachments: {e}")
+                logger.warning("Failed to process attachments: %s", e)
 
         try:
             if images:
@@ -213,7 +214,7 @@ async def _handle_user_message(
                 )
                 logger.info(f"Recorded usage for {session_id}: in={usage_obj.input_tokens} out={usage_obj.output_tokens} cache_r={getattr(usage_obj, 'cache_read_tokens', 0)} cache_w={getattr(usage_obj, 'cache_write_tokens', 0)}")
             except Exception as e:
-                logger.warning(f"Could not capture token usage: {e}")
+                logger.warning("Could not capture token usage: %s", e)
 
             try:
                 emit_event("message_complete", {"content": response_text})
@@ -221,14 +222,14 @@ async def _handle_user_message(
                 logger.debug("Client disconnected before message_complete")
             auto_save_session_if_enabled()
         except Exception as e:
-            logger.error(f"Agent run error: {e}", exc_info=True)
+            logger.error("Agent run error: %s", e, exc_info=True)
             try:
-                emit_event("error", {"error": str(e)})
+                emit_event("error", {"error": redact_error(e)})
             except Exception:
                 logger.debug("Client disconnected before error event")
 
     except Exception as e:
-        logger.error(f"Error handling message: {e}", exc_info=True)
+        logger.error("Error handling message: %s", e, exc_info=True)
     finally:
         if hb_task and not hb_task.done():
             hb_task.cancel()

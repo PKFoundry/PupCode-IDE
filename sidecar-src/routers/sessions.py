@@ -5,6 +5,11 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Request
 
+from error_handling import (
+    file_not_found_response,
+    invalid_request_response,
+    safe_error_response,
+)
 from shared import emit_event, get_current_agent, get_global_model_name, logger, session_mgr
 
 router = APIRouter(prefix="/api/sessions")
@@ -40,8 +45,10 @@ async def list_sessions(
         result = session_mgr.list_sessions(search, sort, order, page, limit)
         return result
     except Exception as e:
-        logger.error(f"Error listing sessions: {e}", exc_info=True)
-        return {"sessions": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+        return safe_error_response(
+            e, logger_obj=logger, context="listing sessions",
+            extra={"sessions": [], "total": 0, "page": page, "limit": limit},
+        )
 
 
 @router.post("/load")
@@ -66,11 +73,12 @@ async def load_session(request: dict):
             "description": result["description"],
             "tags": result["tags"],
         }
-    except FileNotFoundError as e:
-        return {"success": False, "error": str(e)}
+    except FileNotFoundError:
+        return file_not_found_response(logger, context="session not found")
+    except ValueError:
+        return invalid_request_response(logger, context="invalid session name")
     except Exception as e:
-        logger.error(f"Error loading session: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"loading session {session_name}")
 
 
 @router.post("/{session_name}/load-history")
@@ -108,11 +116,14 @@ async def load_session_history(session_name: str):
             "custom_name": result["custom_name"],
             "messages": display_messages,
         }
-    except FileNotFoundError as e:
-        return {"success": False, "error": str(e)}
+    except FileNotFoundError:
+        return file_not_found_response(logger, context="session history not found")
+    except ValueError:
+        return invalid_request_response(logger, context="invalid session name")
     except Exception as e:
-        logger.error(f"Error loading session history: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(
+            e, logger_obj=logger, context=f"loading session history for {session_name}"
+        )
 
 
 @router.put("/{session_name}/rename")
@@ -129,11 +140,10 @@ async def rename_session(session_name: str, request: dict):
             tags=request.get("tags"),
         )
         return result
-    except ValueError as e:
-        return {"success": False, "error": str(e)}
+    except ValueError:
+        return invalid_request_response(logger, context="session not found for rename")
     except Exception as e:
-        logger.error(f"Error renaming session: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"renaming session {session_name}")
 
 
 @router.delete("/{session_name}")
@@ -146,8 +156,7 @@ async def delete_session(session_name: str):
         result = session_mgr.delete_session(session_name)
         return result
     except Exception as e:
-        logger.error(f"Error deleting session: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"deleting session {session_name}")
 
 
 @router.get("/{session_name}/preview")
@@ -160,8 +169,7 @@ async def get_session_preview(session_name: str, count: int = 3):
         result = session_mgr.get_preview(session_name, count)
         return result
     except Exception as e:
-        logger.error(f"Error getting session preview: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context=f"getting preview for session {session_name}")
 
 
 # =============================================================================
@@ -175,8 +183,7 @@ async def get_usage_summary(period: str = "all", model: Optional[str] = None):
     try:
         return session_mgr.get_usage_summary(period=period, model=model)
     except Exception as e:
-        logger.error(f"Error getting usage summary: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="getting usage summary")
 
 
 @usage_router.get("/by_session")
@@ -185,8 +192,7 @@ async def get_usage_by_session(limit: int = 50, offset: int = 0):
     try:
         return session_mgr.get_usage_by_session(limit=limit, offset=offset)
     except Exception as e:
-        logger.error(f"Error getting usage by session: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="getting usage by session")
 
 
 @usage_router.get("/daily")
@@ -195,8 +201,7 @@ async def get_daily_usage(days: int = 30):
     try:
         return session_mgr.get_daily_usage(days=days)
     except Exception as e:
-        logger.error(f"Error getting daily usage: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="getting daily usage")
 
 
 @usage_router.get("/by_model")
@@ -205,8 +210,7 @@ async def get_usage_by_model(period: str = "all", limit: int = 3, offset: int = 
     try:
         return session_mgr.get_usage_by_model(period=period, limit=limit, offset=offset)
     except Exception as e:
-        logger.error(f"Error getting usage by model: {e}", exc_info=True)
-        return {"error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="getting usage by model")
 
 
 @usage_router.post("/clear")
@@ -216,5 +220,4 @@ async def clear_token_stats():
         session_mgr.clear_token_stats()
         return {"success": True}
     except Exception as e:
-        logger.error(f"Error clearing token stats: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return safe_error_response(e, logger_obj=logger, context="clearing token stats")

@@ -57,13 +57,13 @@ class AppState:
             from file_watcher import file_watcher
 
             if file_watcher.start(self.working_dir):
-                logger.info(f"File watcher started for: {self.working_dir}")
+                logger.info("File watcher started for: %s", self.working_dir)
             else:
-                logger.warning(f"Failed to start file watcher for: {self.working_dir}")
+                logger.warning("Failed to start file watcher for: %s", self.working_dir)
         except ImportError:
             logger.warning("watchdog not installed, file watching disabled")
         except Exception as e:
-            logger.warning(f"File watcher failed to start: {e}")
+            logger.warning("File watcher failed to start: %s", e)
 
     async def shutdown(self) -> None:
         """Shut down file watcher, emitter forwarding, and connections."""
@@ -128,7 +128,7 @@ class AppState:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Forward error: {e}")
+                logger.error("Forward error: %s", e, exc_info=True)
 
     def _normalize_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize emitter events for the frontend."""

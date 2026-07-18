@@ -9,6 +9,7 @@ target/
 Audit*.md
 release-artifacts/
 fixes/
+code-scanning-export/
 
 # IDE
 .codegraph/

@@ -76,25 +76,25 @@ class FileChangeHandler(FileSystemEventHandler):
     def on_modified(self, event):
         if event.is_directory or self._should_ignore(event.src_path):
             return
-        logger.debug(f"File modified: {event.src_path}")
+        logger.debug("File modified: %s", event.src_path)
         self._emit_event("modified", event.src_path)
 
     def on_created(self, event):
         if event.is_directory or self._should_ignore(event.src_path):
             return
-        logger.debug(f"File created: {event.src_path}")
+        logger.debug("File created: %s", event.src_path)
         self._emit_event("created", event.src_path)
 
     def on_deleted(self, event):
         if event.is_directory or self._should_ignore(event.src_path):
             return
-        logger.debug(f"File deleted: {event.src_path}")
+        logger.debug("File deleted: %s", event.src_path)
         self._emit_event("deleted", event.src_path)
 
     def on_moved(self, event):
         if event.is_directory or self._should_ignore(event.src_path):
             return
-        logger.debug(f"File moved: {event.src_path} -> {event.dest_path}")
+        logger.debug("File moved: %s -> %s", event.src_path, event.dest_path)
         self._emit_event("moved", event.src_path)
 
 
@@ -106,7 +106,8 @@ class FileWatcher:
         watch_dir: str,
         ignored_dirs: Optional[Set[str]] = None,
     ):
-        self.watch_dir = watch_dir
+        # Resolve symlinks and canonicalize BEFORE any existence checks
+        self.watch_dir = os.path.realpath(watch_dir)
         self.ignored_dirs = ignored_dirs or IGNORED_DIRS
         self._observer: Optional[Observer] = None
         self._handler = FileChangeHandler(ignored_dirs=self.ignored_dirs)
@@ -114,7 +115,7 @@ class FileWatcher:
     def start(self):
         """Start watching the directory."""
         if not os.path.isdir(self.watch_dir):
-            logger.error(f"Watch directory does not exist: {self.watch_dir}")
+            logger.error("Watch directory does not exist: %s", self.watch_dir)
             return
 
         self._observer = Observer()
@@ -122,7 +123,7 @@ class FileWatcher:
             self._handler, self.watch_dir, recursive=True
         )
         self._observer.start()
-        logger.info(f"File watcher started for: {self.watch_dir}")
+        logger.info("File watcher started for: %s", self.watch_dir)
 
     def stop(self):
         """Stop watching the directory."""
@@ -148,7 +149,7 @@ class _LegacyFileWatcher:
             self._watcher.start()
             return True
         except Exception as e:
-            logger.error(f"Failed to start file watcher: {e}")
+            logger.error("Failed to start file watcher: %s", e, exc_info=True)
             return False
 
     def stop(self):
